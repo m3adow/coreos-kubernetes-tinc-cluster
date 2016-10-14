@@ -43,18 +43,20 @@ main_loop(){
     if [ ! "${HA_CURRSUM}" == "${HA_LASTUM}" ]
     then
       # DNS Magic happens here
-      echo "Changes detected, updating DNS"
+      docker run --rm -ti
     fi
     sleep ${HA_REFRESH_INTERVAL}
   done
 }
 
 
-while getopts u OPT
+while getopts e:u OPT
 do
   case "${OPT}" in
     u)
       HA_ALLOW_UPDATE=1
+    e)
+      CF_ENV_FILE=${OPTARG} # Ongoing
     ;;
   esac
 done

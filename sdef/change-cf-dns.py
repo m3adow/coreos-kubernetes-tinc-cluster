@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import CloudFlare
 import os
 import pprint
