@@ -13,6 +13,9 @@ HA_ETCD_MYIP=${HA_ETCD_MYIP:-${COREOS_PUBLIC_IPV4}}
 
 HA_ALLOW_UPDATE=${HA_ALLOW_UPDATE:-0}
 
+CF_API_EMAIL=${CF_API_EMAIL:-}
+CF_API_KEY=${CF_API_KEY:-}
+
 
 initial_run() {
   # If this fails, we need to initially insert
@@ -43,7 +46,11 @@ main_loop(){
     if [ ! "${HA_CURRSUM}" == "${HA_LASTUM}" ]
     then
       # DNS Magic happens here
-      docker run --rm -ti
+      TMPENVFILE=$(mktemp)
+      echo "CF_API_EMAIL=${CF_API_EMAIL}" > ${TMPENVFILE}
+      echo "CF_API_KEY=${CF_API_KEY}" >> ${TMPENVFILE}
+      docker run --rm -ti m3adow/change-cloudflare-dns-entries
+      rm -f ${TMPENVFILE}
     fi
     sleep ${HA_REFRESH_INTERVAL}
   done
@@ -56,7 +63,7 @@ do
     u)
       HA_ALLOW_UPDATE=1
     e)
-      CF_ENV_FILE=${OPTARG} # Ongoing
+      CF_ENV_FILE=${OPTARG}
     ;;
   esac
 done
