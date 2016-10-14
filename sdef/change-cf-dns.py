@@ -49,8 +49,6 @@ def get_dns_records(cf, zone_id, domain):
 def filter_existing(ips, records):
     new_ips = list(ips)
     new_records = list(records)
-    print len(new_ips)
-    print len(new_records)
 
     for record in records:
         if record['content'] in ips:
@@ -106,6 +104,8 @@ def main():
         else:
             add_new_record(cf, zone_id, args['domain'], args['ips'][0])
             args['ips'].pop(0)
+
+    print("CF DNS change finished.")
 
 
 if __name__ == '__main__':
