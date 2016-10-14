@@ -5,4 +5,4 @@ RUN pip install tld
 
 COPY ["change-cf-dns.py", "opt/"]
 
-CMD ["python", "/opt/change-cf-dns.py"]
+ENTRYPOINT ["/opt/change-cf-dns.py"]
