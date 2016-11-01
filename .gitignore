@@ -90,3 +90,9 @@ ENV/
 
 
 .idea/
+secret/
+.dropboxattr
+/**/.dropbox.attr
+.dropbox
+.dropbox.attr
+*.swp
