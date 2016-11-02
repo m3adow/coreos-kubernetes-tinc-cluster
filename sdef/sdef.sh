@@ -1,5 +1,4 @@
 #!/bin/bash
-set -x
 set -e
 set -u
 set -o pipefail
@@ -7,6 +6,7 @@ set -o pipefail
 SDEF_ETCD_DIR=${SDEF_ETCD_DIR:-/services/sdef/}
 SDEF_ETCD_MYNAME=${SDEF_ETCD_MYNAME:-$(uname -n)}
 SDEF_ETCD_MYIP=${SDEF_ETCD_MYIP:-${COREOS_PUBLIC_IPV4}}
+SDEF_DOMAIN=${SDEF_DOMAIN:-}
 
 SDEF_ALLOW_UPDATE=${SDEF_ALLOW_UPDATE:-1}
 SDEF_ETCD_TTL=${SDEF_ETCD_TTL:-10}
@@ -17,20 +17,25 @@ CF_API_KEY=${CF_API_KEY:-}
 
 set_key() {
   local MY_TTL=${1:-${SDEF_ETCD_TTL}}
-  etcdctl set --ttl ${SDEF_ETCD_TTL} "${SDEF_ETCD_DIR}/${SDEF_ETCD_MYNAME}" ${SDEF_ETCD_MYIP}
+  etcdctl set --ttl ${SDEF_ETCD_TTL} "${SDEF_ETCD_DIR}/${SDEF_ETCD_MYNAME}" ${SDEF_ETCD_MYIP} >/dev/null
 }
 
 # get chksum of cluster IPs to simplify check for change
 get_chksum() {
-  SDEF_CURRSUM=$(for LINE in $(etcdctl ls --recursive -p "${SDEF_ETCD_DIR}"); do echo "${LINE}"; etcdctl get "${LINE}"; done | sha1sum | cut -d ' ' -f1)
+  local SUMSTRING=
+  for LINE in $(etcdctl ls --sort --recursive -p "${SDEF_ETCD_DIR}")
+  do
+    SUMSTRING="${SUMSTRING};;${LINE}:$(etcdctl get "${LINE}")"
+  done
+  SDEF_CURRSUM=$(echo "${SUMSTRING}" | sha1sum | cut -d ' ' -f1)
 }
 
 
 initial_run() {
   # If this fails, we need to initially insert
-  set +x
+  set +e
   local ALREADY_EXISTS=$(etcdctl ls --quorum "${SDEF_ETCD_DIR}/${SDEF_ETCD_MYNAME}" > /dev/null 2>&1; echo $?)
-  set -x
+  set -e
 
   if [ "${ALREADY_EXISTS}" -ne 0 -o "${SDEF_ALLOW_UPDATE}" -eq 1 ]
   then
@@ -59,7 +64,9 @@ main_loop(){
       # Increase TTL before running the container so the key isn't removed before the next loop run (error prone, I know)
       set_key 30
       # DNS Magic happens here
+      set -x
       docker run --rm --env-file "${TMPENVFILE}" m3adow/change-cloudflare-dns-entries -d "${SDEF_DOMAIN}" -i "${NEW_ENDPOINTS}"
+      set +x
       rm -f ${TMPENVFILE}
     fi
     sleep ${SDEF_REFRESH_INTERVAL}
