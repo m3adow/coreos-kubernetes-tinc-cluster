@@ -61,7 +61,7 @@ main_loop(){
       echo "CF_API_EMAIL=${CF_API_EMAIL}" > ${TMPENVFILE}
       echo "CF_API_KEY=${CF_API_KEY}" >> ${TMPENVFILE}
 
-      # Increase TTL before running the container so the key isn't removed before the next loop run (error prone, I know)
+      # Increase TTL before running the container so the own key isn't removed before the next loop run (error prone, I know)
       set_key 30
       # DNS Magic happens here
       set -x
