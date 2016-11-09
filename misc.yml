@@ -1,0 +1,6 @@
+coreos:
+  etcd2:
+    flannel:
+      # Workaround for timeout issues
+      heartbeat-interval: 400
+      election-timeout: 200

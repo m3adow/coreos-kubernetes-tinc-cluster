@@ -1,0 +1,28 @@
+# Sequence of Mappings, one mapping per node
+---
+-
+  hostname: k8s-master.example.org
+  network:
+    ip: 172.1.0.2
+    subnet: 24
+    gateway: 172.1.01
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+  etcd:
+    nodename: node1
+  flannel:
+    network_range: 10.2.0.0/16
+  k8s:
+    service_ip_range: 10.3.0.0/24
+    service_ip: 10.3.0.1
+    dns_service_ip: 10.3.0.10
+    kubelet_version: v1.4.5_coreos.0
+  sdef:
+    domain: sdef.example.org
+    cf_apikey: aaa111222333
+    cf_email: mail@example.org
+  includes:
+    key_inc: keys.yml
+    misc_inc: misc.yml
+    k8s: k8s-master.tmpl
