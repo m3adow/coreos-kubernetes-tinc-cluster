@@ -1,0 +1,305 @@
+#cloud-config
+# Inspired by https://github.com/cornelius-keller/coreos-vagrant-tinc/blob/master/user-data
+hostname: {{ my.hostname}}
+
+{% include '%s_keys.yml' % my.hostname ignore missing %}
+
+write_files:
+  - path: "/etc/environment"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      COREOS_PUBLIC_IPV4={{ my.network.ip }}
+      ETCDCTL_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCDCTL_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCDCTL_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+      ETCDCTL_ENDPOINT=https://127.0.0.1:2379
+      # Client Env Vars
+      ETCD_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCD_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCD_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+      # Peers Env Vars
+      ETCD_PEER_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCD_PEER_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCD_PEER_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+  - path: "/etc/sdef/environment"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      # Simple DNS etcd failover
+      SDEF_DOMAIN={{ my.sdef.domain }}
+      CF_API_EMAIL={{my.sdef.cf_email }}
+      CF_API_KEY={{my.sdef.cf_apikey }}
+coreos:
+  etcd2:
+    name: "{{ my.etcd.nodename }}"
+    data-dir: /var/lib/etcd2
+    # clients
+    advertise-client-urls: https://{{ my.network.ip }}:2379
+    listen-client-urls: https://0.0.0.0:2379
+    # peers
+    initial-advertise-peer-urls: https://{{ my.network.ip }}:2380
+    listen-peer-urls: https://{{ my.network.ip }}:2380
+    # cluster
+    initial-cluster: {{ my.etcd.nodename }}=https://{{ my.network.ip }}:2380,{% for node in remaining_nodes %}{{ node.etcd.nodename }}=https://{{ node.network.ip }}:2380
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    initial-cluster-state: new
+    initial-cluster-token: etcd-cluster-1
+  flannel:
+    interface: {{ my.network.ip }}
+    etcd_endpoints: https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    etcd_cafile: /etc/ssl/etcd/ca.crt
+    etcd_certfile: /etc/ssl/etcd/{{ my.hostname }}.crt
+    etcd_keyfile: /etc/ssl/etcd/{{ my.hostname }}.key
+  locksmith:
+    endpoint: https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    etcd_cafile: /etc/ssl/etcd/ca.crt
+    etcd_certfile: /etc/ssl/etcd/{{ my.hostname }}.crt
+    etcd_keyfile: /etc/ssl/etcd/{{ my.hostname }}.key
+  update:
+    reboot-strategy: "etcd-lock"
+  units:
+    - name: 00-eth0-network
+      runtime: true
+      content: |
+        [Match]
+        Name=eth0
+
+        [Network]
+        {% for nameserv in my.network.dns -%}
+        DNS={{ nameserv }}
+        {% endfor %}
+        Address={{ my.network.ip }}/{{ my.network.subnet }}
+        Gateway={{ my.network.gateway }}
+    - name: etcd2.service
+      drop-ins:
+        - name: 30-certificates.conf
+          content: |
+            [Service]
+            EnvironmentFile=/etc/environment
+      command: "start"
+    - name: flanneld.service
+      drop-ins:
+        - name: 50-network-config.conf
+          content: |
+            [Service]
+            Environment=FLANNELD_IFACE={{ my.network.ip }}
+            EnvironmentFile=/etc/environment
+            ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{ "Network": "{{ my.flannel.network_range }}", "Backend": { "Type": "alloc"} }'
+      command: start
+    - name: sdef.service
+      command: start
+      content: |
+        [Unit]
+        Description=Simple DNS etcd Failover service
+        Requires=etcd2.service docker.service
+        After=etcd2.service docker.service
+
+        [Service]
+        EnvironmentFile=/etc/environment
+        EnvironmentFile=/etc/sdef/environment
+        Restart=always
+
+        ExecStartPre=/usr/bin/docker pull m3adow/change-cloudflare-dns-entries
+        ExecStart=/srv/sdef/sdef.sh
+write_files:
+  - path: "/etc/resolv.conf"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      {% for nameserv in my.network.dns -%}
+        nameserver {{ nameserv }}
+      {% endfor %}
+  - path: /etc/ssh/sshd_config
+    permissions: 600
+    owner: root:root
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      ChallengeResponseAuthentication no
+      AllowUsers core kube
+  - path: /root/.vimrc
+    permissions: 0644
+    owner: root:root
+    content: |
+      se nu
+      se ai
+      se shiftwidth=2
+      se tabstop=2
+      se expandtab
+  - path: "/srv/sdef/sdef.sh"
+    permissions: "755"
+    owner: "root"
+    content: |
+      {% macro sdef() %}{% include "sdef/sdef.sh" %}{% endmacro -%}
+      {{ sdef()|indent(6) }}
+users:
+  - name: "kube"
+    groups:
+      - "sudo"
+      - "docker"
+
+# This is needed for me as my servers tend to timeout. :-(
+{% include 'etcd_misc.yml' ignore missing %}
+
+# k8s
+{% include my.includes.k8s ignore missing %}
+
+# TINC
+coreos:
+  units:
+    - name: early-docker.service
+      command: start
+      enable: true
+    - name: tinc-env.service
+      enable: true
+      command: start
+      content: |
+        [Unit]
+        Description=Tinc Service
+        After=etcd.service etcd2.service early-docker.service flanneld.service
+        Before=early-docker.target fleet.service
+        
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/sh -c "echo \"TINC_HOSTNAME=`hostname -s | sed -e 's/-/_/g'`\" > /etc/tinc-env"
+    - name: tinc-conf.service
+      enable: true
+      command: start
+      content: |
+        [Unit]
+        Description=Tinc Configuration Service
+        After=etcd.service etcd2.service early-docker.service flanneld.service
+        Before=early-docker.target fleet.service
+        AssertPathExists=/run/flannel/subnet.env
+
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/sh -c "echo \"TINC_HOSTNAME=`hostname -s | sed -e 's/-/_/g'`\" > /etc/tinc-env"
+    - name: flannel-subnet-env.path
+      enable: true
+      command: start
+      content: |
+        [Unit]
+        Description=flannel.env file in /run
+        Requires=flanneld.service
+        After=etcd.service etcd2.service early-docker.service flanneld.service
+
+        [Path]
+        PathExists=/run/flannel/subnet.env
+        Unit=tinc.service
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: tinc.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Tinc VPN Service
+        Requires=flannel-subnet-env.path
+        After=early-docker.service flanneld.service tinc-env.service flannel-subnet-env.path
+        Before=early-docker.target
+
+        [Service]
+        Environment="DOCKER_HOST=unix:///var/run/early-docker.sock"
+        EnvironmentFile=/etc/tinc-env
+        EnvironmentFile=/etc/environment
+
+        ExecStartPre=/usr/bin/docker pull jenserat/tinc
+        ExecStartPre=/usr/bin/rm -rf /srv/tinc
+        ExecStartPre=/usr/bin/mkdir -p /srv/tinc
+        ExecStartPre=/bin/sh -c "/usr/bin/docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc init $TINC_HOSTNAME"
+        ExecStartPre=/bin/sh -c "/usr/bin/docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add Address = {{ my.network.ip }}"
+        EnvironmentFile=/run/flannel/subnet.env
+        ExecStartPre=/bin/sh -c "/usr/bin/docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add Subnet = `echo $FLANNEL_SUBNET | sed -e 's/1\\/24/0\\/24/'`"
+        ExecStartPre=/bin/sh -c "/usr/bin/docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add Mode = switch"
+        ExecStartPre=/bin/sh -c "/usr/bin/docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add DeviceType = tap"
+        ExecStartPre=-/usr/bin/docker rm -f tinc 
+        ExecStartPre=/usr/bin/docker run --name tinc -d --volume /srv/tinc:/etc/tinc --net=host --device=/dev/net/tun --cap-add NET_ADMIN jenserat/tinc start -D
+
+        ExecStart=/bin/sh -c "while true; do etcdctl set /services/tinc/$TINC_HOSTNAME  \"\\\"` cat /srv/tinc/hosts/$TINC_HOSTNAME `\"\\\" --ttl 60;sleep 45;done"
+
+        ExecStop=/usr/bin/docker rm -f tinc
+        ExecStopPost=/bin/sh -c  "etcdctl rm /services/tinc/$TINC_HOSTNAME"
+        ExecStopPost=-/bin/sh -c "brctl delif docker0 tap0"
+    - name: docker-bridge.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Configure Docker Bridge
+        Requires=docker.service sys-devices-virtual-net-tap0.device sys-devices-virtual-net-docker0.device
+        After=docker.service sys-devices-virtual-net-tap0.device sys-devices-virtual-net-docker0.device
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/bin/sh -c "route add -net 10.1.0.0 netmask 255.255.0.0 dev docker0"
+        ExecStart=/bin/sh -c "brctl addif docker0 tap0"
+    - name: tinc-config-updater.service
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Countinously update tinc configuration after ectd changes
+        Requires=tinc.service
+        After=tinc.service
+        
+        [Service]
+        EnvironmentFile=/etc/environment
+        Restart=always
+
+        ExecStartPre=/srv/tinc_initial_config.sh
+        ExecStart=/usr/bin/etcdctl exec-watch --recursive /services/tinc -- /srv/tinc_conf_updater.sh
+  
+write_files:
+  - path: /srv/tinc_initial_config.sh
+    permissions: 0774
+    owner: root
+    content: |
+      #!/bin/sh
+      export DOCKER_HOST=unix:///var/run/early-docker.sock
+      . /etc/tinc-env
+      for host in `etcdctl ls /services/tinc/ | sed -e 's/\/services\/tinc\///'`; do
+        if [ "$TINC_HOSTNAME" != "$host" ]; then
+          docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add ConnectTo = $host
+          etcdctl get /services/tinc/$host | sed -e 's/\"//g' > /srv/tinc/hosts/$host
+        fi
+      done
+      docker exec tinc /usr/sbin/tinc reload
+  - path: /srv/tinc_conf_updater.sh
+    permissions: 0774
+    owner: root
+    content: |
+      #!/bin/sh
+      export DOCKER_HOST=unix:///var/run/early-docker.sock
+      . /etc/tinc-env
+      host=${ETCD_WATCH_KEY/\/services\/tinc\//}
+      echo "host is $host"
+      echo "$ETCD_WATCH_KEY\" key was updated to \"$ETCD_WATCH_VALUE\" value by \"$ETCD_WATCH_ACTION\" action"
+      if [ $TINC_HOSTNAME != $host ]; then
+        if [ "$ETCD_WATCH_ACTION" = "set" ]; then
+          echo "configuring new tinc host $host"
+          current_value="";
+          if [ -f /srv/tinc/hosts/$host ]; then
+            current_value="$( cat /srv/tinc/hosts/$host )"
+          fi
+          if [ "$ETCD_WATCH_VALUE" != "\"$current_value\"" ]; then
+            docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc add ConnectTo = $host
+            etcdctl get /services/tinc/$host | sed -e 's/\"//g' > /srv/tinc/hosts/$host
+            docker exec tinc /usr/sbin/tinc reload
+            echo "done"
+          else
+           echo "old value = new value; nothing to do"
+          fi
+        fi
+        if [ "$ETCD_WATCH_ACTION" = "delete" ] || [ "$ETCD_WATCH_ACTION" = "expire" ]; then
+          echo "removing tinc host $host"
+          docker run --rm --volume /srv/tinc:/etc/tinc  jenserat/tinc del ConnectTo = $host
+          rm -f /srv/tinc/hosts/$host
+          docker exec tinc /usr/sbin/tinc reload
+          echo "done"
+        fi
+      fi
