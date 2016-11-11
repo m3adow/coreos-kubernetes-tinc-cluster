@@ -5,7 +5,7 @@
   network:
     ip: 172.1.0.2
     subnet: 24
-    gateway: 172.1.01
+    gateway: 172.1.0.1
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -19,7 +19,7 @@
     dns_service_ip: 10.3.0.10
     versions:
       hyperkube: v1.4.5_coreos.0
-      calico: v0.23.0
+      calico: latest
       policy_controller: v0.5.0
       leader_elector: v0.1.0
   sdef:
