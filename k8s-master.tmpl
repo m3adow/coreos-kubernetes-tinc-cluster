@@ -306,12 +306,12 @@ coreos:
       
       [Service]
       Type=oneshot
-      #ExecStartPre=/bin/bash -c 'while ! docker ps --filter name=k8s_kube-apiserver -q; do echo $(date); sleep 1; done'
       ExecStartPre=/bin/bash -c 'while ! curl -so /dev/null http://127.0.0.1:8080; do sleep 5; done'
       ExecStart=/usr/bin/curl -sS -H "Content-Type: application/json" -XPOST \
         -d'{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"kube-system"}}' "http://127.0.0.1:8080/api/v1/namespaces"
       ExecStart=/usr/bin/curl -sS -H "Content-Type: application/json" -XPOST \
         -d'{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"calico-system"}}' "http://127.0.0.1:8080/api/v1/namespaces"
+{# This is needed to fix https://github.com/projectcalico/calico-containers/issues/1123 #}
   - name: fix-calico-dir.service
     enable: true
     command: start
