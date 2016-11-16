@@ -1,16 +1,10 @@
 # Sequence of Mappings, one mapping per node
 ---
--
-  hostname: k8s-master.example.org
-  network:
-    ip: 172.1.0.2
-    subnet: 24
-    gateway: 172.1.0.1
+global:
+  override:
     dns:
       - 8.8.8.8
       - 8.8.4.4
-  etcd:
-    nodename: node1
   flannel:
     network_range: 10.2.0.0/16
   k8s:
@@ -26,7 +20,33 @@
     domain: sdef.example.org
     cf_apikey: aaa111222333
     cf_email: mail@example.org
+
+nodes:
+-
+  hostname: k8s-master.example.org
+  network:
+    ip: 172.1.0.2
+    subnet: 24
+    gateway: 172.1.0.1
+  etcd:
+    nodename: node1
+  k8s:
+    isworker: false
   includes:
     key_inc: keys.yml
     misc_inc: misc.yml
     k8s: k8s-master.tmpl
+-
+  hostname: k8s-worker.example.org
+  network:
+    ip: 172.254.0.2
+    subnet: 24
+    gateway: 172.254.0.1
+  etcd:
+    nodename: node1
+  k8s:
+    isworker: true
+  includes:
+    key_inc: keys.yml
+    misc_inc: misc.yml
+    k8s: k8s-worker.tmpl
