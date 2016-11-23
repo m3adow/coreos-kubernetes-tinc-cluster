@@ -105,6 +105,28 @@ coreos:
 
         ExecStartPre=/usr/bin/docker pull m3adow/change-cloudflare-dns-entries
         ExecStart=/srv/sdef/sdef.sh
+    # This service & timer should probably removed when your K8s cluster runs properly. It's a measure to prevent too much rkt clutter
+    - name: dev-rkt-gc.service
+      content: |
+        [Unit]
+        Description=Eradicative Garbage Collection for rkt
+
+        [Service]
+        Environment=GRACE_PERIOD=30m
+        Type=oneshot
+        ExecStart=/usr/bin/rkt gc --grace-period=${GRACE_PERIOD}
+    - name: dev-rkt-gc.timer
+      command: start
+      content: |
+        [Unit]
+        Description=Periodic Garbage Collection for rkt
+
+        [Timer]
+        OnActiveSec=0s
+        OnUnitActiveSec=1h
+
+        [Install]
+        WantedBy=default.target
 write_files:
   - path: "/etc/resolv.conf"
     permissions: "0644"

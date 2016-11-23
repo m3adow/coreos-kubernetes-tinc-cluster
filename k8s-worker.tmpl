@@ -125,51 +125,5 @@ coreos:
       RestartSec=10
       [Install]
       WantedBy=multi-user.target
-  - name: calico-node.service
-    command: start
-    content: |
-      [Unit]
-      Description=Calico per-host agent
-      Requires=network-online.target
-      After=network-online.target
 
-      [Service]
-      Slice=machine.slice
-      EnvironmentFile=/etc/environment
-      {# Calico uses a different Env for etcd CA #}
-      Environment=ETCD_CA_CERT_FILE=/etc/ssl/etcd/ca.crt
-
-      Environment=CALICO_DISABLE_FILE_LOGGING=true
-      Environment=HOSTNAME={{ my.network.ip }}
-      Environment=IP={{ my.network.ip }}
-      Environment=FELIX_FELIXHOSTNAME={{ my.network.ip }}
-      Environment=CALICO_NETWORKING_BACKEND=false
-      Environment=NO_DEFAULT_POOLS=true
-      Environment=ETCD_ENDPOINTS=https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
-        {%- if not loop.last %},{% endif %}{% endfor %}
-      ExecStart=/usr/bin/rkt run --inherit-env --stage1-from-dir=stage1-fly.aci \
-      --volume=modules,kind=host,source=/lib/modules,readOnly=false \
-      --mount=volume=modules,target=/lib/modules \
-      --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true \
-      --mount=volume=dns,target=/etc/resolv.conf \
-      --volume=etcd-ssl,kind=host,source=/etc/ssl/etcd/ \
-      --mount=volume=etcd-ssl,target=/etc/ssl/etcd/ \
-      --trust-keys-from-https quay.io/calico/node:{{ my.versions.calico }}
-
-      KillMode=mixed
-      Restart=always
-      TimeoutStartSec=0
-
-      [Install]
-      WantedBy=multi-user.target
-{# This is needed to fix https://github.com/projectcalico/calico-containers/issues/1123 #}
-  - name: fix-calico-dir.service
-    enable: true
-    command: start
-    content: |
-      [Unit]
-      After=calico-node.service
-
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/bash -c "/usr/bin/mkdir -p $$(df -h | grep -E \"$$(rkt list --no-legend 2>/dev/null|grep -E 'quay.io/calico/node:{{ my.versions.calico }}\\s*running'|awk '{ print $$1 }').*stage2/.*/rootfs$$\"| awk '{ print $$NF }')/var/run/calico"
+{% include 'k8s-common.tmpl' %}
