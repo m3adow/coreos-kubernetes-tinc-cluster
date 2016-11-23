@@ -59,6 +59,8 @@ coreos:
     etcd_keyfile: /etc/ssl/etcd/{{ my.hostname }}.key
   update:
     reboot-strategy: "etcd-lock"
+    group: {% if my.versions.coreos_release is defined -%}"{{ my.versions.coreos_release }}"
+           {%- else -%} "stable" {%- endif %}
   units:
     - name: 00-eth0-network
       runtime: true
