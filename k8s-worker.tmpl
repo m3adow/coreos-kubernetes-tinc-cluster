@@ -1,0 +1,175 @@
+write_files:
+  - path: "/etc/kubernetes/manifests/kube-proxy.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-proxy
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-proxy
+          image: quay.io/coreos/hyperkube:{{ my.versions.hyperkube }}
+          command:
+          - /hyperkube
+          - proxy
+          - --master=https://{{ my.k8s.master_host }}
+          - --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml
+          - --proxy-mode=iptables
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: "ssl-certs"
+            - mountPath: /etc/kubernetes/worker-kubeconfig.yaml
+              name: "kubeconfig"
+              readOnly: true
+            - mountPath: /etc/kubernetes/ssl
+              name: "etc-kube-ssl"
+              readOnly: true
+        volumes:
+          - name: "ssl-certs"
+            hostPath:
+              path: "/usr/share/ca-certificates"
+          - name: "kubeconfig"
+            hostPath:
+              path: "/etc/kubernetes/worker-kubeconfig.yaml"
+          - name: "etc-kube-ssl"
+            hostPath:
+              path: "/etc/kubernetes/ssl"
+  - path: "/etc/kubernetes/worker-kubeconfig.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - name: local
+        cluster:
+          certificate-authority: /etc/kubernetes/ssl/ca.pem
+      users:
+      - name: kubelet
+        user:
+          client-certificate: /etc/kubernetes/ssl/worker.pem
+          client-key: /etc/kubernetes/ssl/worker-key.pem
+      contexts:
+      - context:
+          cluster: local
+          user: kubelet
+        name: kubelet-context
+      current-context: kubelet-context 
+  - path: "/etc/kubernetes/cni/net.d/10-calico.conf"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      {
+          "name": "calico",
+          "type": "flannel",
+          "delegate": {
+              "type": "calico",
+              "etcd_endpoints": "https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+                {%- if not loop.last %},{% endif %}{% endfor %}",
+              "log_level": "none",
+              "log_level_stderr": "info",
+              "hostname": "{{ my.network.ip }}",
+              "policy": {
+                  "type": "k8s",
+                  "k8s_api_root": "https://{{ my.k8s.master_host }}:443/api/v1/",
+                  "k8s_client_key": "/etc/kubernetes/ssl/worker-key.pem",
+                  "k8s_client_certificate": "/etc/kubernetes/ssl/worker.pem"
+              }
+          }
+      }
+coreos:
+  units:
+  - name: kubelet.service
+    command: start
+    content: |
+      [Service]
+      ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
+      ExecStartPre=/usr/bin/mkdir -p /var/log/containers
+
+      EnvironmentFile=/etc/environment
+      {# Use these lines for CoreOS versions less than 1214.0.0
+      Environment=KUBELET_VERSION={{ my.versions.hyperkube }}
+      Environment="RKT_OPTS=--volume var-log,kind=host,source=/var/log \
+        --mount volume=var-log,target=/var/log \
+        --volume dns,kind=host,source=/etc/resolv.conf \
+        --mount volume=dns,target=/etc/resolv.conf"
+      #}
+      Environment=KUBELET_IMAGE_TAG={{ my.versions.hyperkube }}
+      Environment="RKT_RUN_ARGS=--volume var-log,kind=host,source=/var/log \
+        --mount volume=var-log,target=/var/log \
+        --volume=etcd-ssl,kind=host,source=/etc/ssl/etcd/ \
+        --mount=volume=etcd-ssl,target=/etc/ssl/etcd/ \
+        --volume dns,kind=host,source=/etc/resolv.conf \
+        --mount volume=dns,target=/etc/resolv.conf"
+
+      ExecStart=/usr/lib/coreos/kubelet-wrapper \
+        --api-servers=https://{{ my.k8s.master_host }} \
+        --network-plugin-dir=/etc/kubernetes/cni/net.d \
+        --network-plugin=cni \
+        --register-node={%- if my.k8s.isworker == true -%} true {%- else -%} false {%- endif %} \
+        --allow-privileged=true \
+        --config=/etc/kubernetes/manifests \
+        --hostname-override={{ my.network.ip }} \
+        --cluster-dns={{ my.k8s.dns_service_ip }} \
+        --cluster-domain=cluster.local \
+        --kubeconfig=/etc/kubernetes/worker-kubeconfig.yaml \
+        --tls-cert-file=/etc/kubernetes/ssl/worker.pem \
+        --tls-private-key-file=/etc/kubernetes/ssl/worker-key.pem
+      Restart=always
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+  - name: calico-node.service
+    command: start
+    content: |
+      [Unit]
+      Description=Calico per-host agent
+      Requires=network-online.target
+      After=network-online.target
+
+      [Service]
+      Slice=machine.slice
+      EnvironmentFile=/etc/environment
+      {# Calico uses a different Env for etcd CA #}
+      Environment=ETCD_CA_CERT_FILE=/etc/ssl/etcd/ca.crt
+
+      Environment=CALICO_DISABLE_FILE_LOGGING=true
+      Environment=HOSTNAME={{ my.network.ip }}
+      Environment=IP={{ my.network.ip }}
+      Environment=FELIX_FELIXHOSTNAME={{ my.network.ip }}
+      Environment=CALICO_NETWORKING_BACKEND=false
+      Environment=NO_DEFAULT_POOLS=true
+      Environment=ETCD_ENDPOINTS=https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+        {%- if not loop.last %},{% endif %}{% endfor %}
+      ExecStart=/usr/bin/rkt run --inherit-env --stage1-from-dir=stage1-fly.aci \
+      --volume=modules,kind=host,source=/lib/modules,readOnly=false \
+      --mount=volume=modules,target=/lib/modules \
+      --volume=dns,kind=host,source=/etc/resolv.conf,readOnly=true \
+      --mount=volume=dns,target=/etc/resolv.conf \
+      --volume=etcd-ssl,kind=host,source=/etc/ssl/etcd/ \
+      --mount=volume=etcd-ssl,target=/etc/ssl/etcd/ \
+      --trust-keys-from-https quay.io/calico/node:{{ my.versions.calico }}
+
+      KillMode=mixed
+      Restart=always
+      TimeoutStartSec=0
+
+      [Install]
+      WantedBy=multi-user.target
+{# This is needed to fix https://github.com/projectcalico/calico-containers/issues/1123 #}
+  - name: fix-calico-dir.service
+    enable: true
+    command: start
+    content: |
+      [Unit]
+      After=calico-node.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/bin/bash -c "/usr/bin/mkdir -p $$(df -h | grep -E \"$$(rkt list --no-legend 2>/dev/null|grep -E 'quay.io/calico/node:{{ my.versions.calico }}\\s*running'|awk '{ print $$1 }').*stage2/.*/rootfs$$\"| awk '{ print $$NF }')/var/run/calico"
