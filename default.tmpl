@@ -1,0 +1,174 @@
+#cloud-config
+hostname: {{ my.hostname}}
+
+{% include '%s_keys.yml' % my.hostname ignore missing %}
+
+write_files:
+  - path: "/etc/environment"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      COREOS_PUBLIC_IPV4={{ my.network.ip }}
+      ETCDCTL_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCDCTL_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCDCTL_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+      ETCDCTL_ENDPOINT=https://127.0.0.1:2379
+      # Client Env Vars
+      ETCD_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCD_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCD_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+      # Peers Env Vars
+      ETCD_PEER_CA_FILE=/etc/ssl/etcd/ca.crt
+      ETCD_PEER_CERT_FILE=/etc/ssl/etcd/{{ my.hostname }}.crt
+      ETCD_PEER_KEY_FILE=/etc/ssl/etcd/{{ my.hostname }}.key
+  - path: "/etc/sdef/environment"
+    permissions: "0600"
+    owner: "root"
+    content: |
+      # Simple DNS etcd failover
+      SDEF_DOMAIN={{ my.sdef.domain }}
+      CF_API_EMAIL={{my.sdef.cf_email }}
+      CF_API_KEY={{my.sdef.cf_apikey }}
+coreos:
+  etcd2:
+    name: "{{ my.etcd.nodename }}"
+    data-dir: /var/lib/etcd2
+    # clients
+    advertise-client-urls: https://{{ my.network.ip }}:2379
+    listen-client-urls: https://0.0.0.0:2379
+    # peers
+    initial-advertise-peer-urls: https://{{ my.network.ip }}:2380
+    listen-peer-urls: https://{{ my.network.ip }}:2380
+    # cluster
+    initial-cluster: {{ my.etcd.nodename }}=https://{{ my.network.ip }}:2380,{% for node in remaining_nodes %}{{ node.etcd.nodename }}=https://{{ node.network.ip }}:2380
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    initial-cluster-state: new
+    initial-cluster-token: etcd-cluster-1
+  flannel:
+    interface: {{ my.network.ip }}
+    etcd_endpoints: https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    etcd_cafile: /etc/ssl/etcd/ca.crt
+    etcd_certfile: /etc/ssl/etcd/{{ my.hostname }}.crt
+    etcd_keyfile: /etc/ssl/etcd/{{ my.hostname }}.key
+  locksmith:
+    endpoint: https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+            {%- if not loop.last %},{% endif %}{% endfor %}
+    etcd_cafile: /etc/ssl/etcd/ca.crt
+    etcd_certfile: /etc/ssl/etcd/{{ my.hostname }}.crt
+    etcd_keyfile: /etc/ssl/etcd/{{ my.hostname }}.key
+  update:
+    reboot-strategy: "etcd-lock"
+    group: {% if my.versions.coreos_release is defined -%}"{{ my.versions.coreos_release }}"
+           {%- else -%} "stable" {%- endif %}
+  units:
+    - name: 00-eth0-network
+      runtime: true
+      content: |
+        [Match]
+        Name=eth0
+
+        [Network]
+        {% for nameserv in my.network.dns -%}
+        DNS={{ nameserv }}
+        {% endfor %}
+        Address={{ my.network.ip }}/{{ my.network.subnet }}
+        Gateway={{ my.network.gateway }}
+    - name: etcd2.service
+      drop-ins:
+        - name: 30-certificates.conf
+          content: |
+            [Service]
+            EnvironmentFile=/etc/environment
+      command: "start"
+    - name: flanneld.service
+      drop-ins:
+        - name: 50-network-config.conf
+          content: |
+            [Service]
+            Environment=FLANNELD_IFACE={{ my.network.ip }}
+            EnvironmentFile=/etc/environment
+            ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{ "Network": "{{ my.flannel.network_range }}", "Backend": { "Type": "alloc"} }'
+      command: start
+    - name: sdef.service
+      command: start
+      content: |
+        [Unit]
+        Description=Simple DNS etcd Failover service
+        Requires=etcd2.service docker.service
+        After=etcd2.service docker.service
+
+        [Service]
+        EnvironmentFile=/etc/environment
+        EnvironmentFile=/etc/sdef/environment
+        Restart=always
+
+        ExecStartPre=/usr/bin/docker pull m3adow/change-cloudflare-dns-entries
+        ExecStart=/srv/sdef/sdef.sh
+    # This service & timer should probably removed when your K8s cluster runs properly. It's a measure to prevent too much rkt clutter
+    - name: dev-rkt-gc.service
+      content: |
+        [Unit]
+        Description=Eradicative Garbage Collection for rkt
+
+        [Service]
+        Environment=GRACE_PERIOD=30m
+        Type=oneshot
+        ExecStart=/usr/bin/rkt gc --grace-period=${GRACE_PERIOD}
+    - name: dev-rkt-gc.timer
+      command: start
+      content: |
+        [Unit]
+        Description=Periodic Garbage Collection for rkt
+
+        [Timer]
+        OnActiveSec=0s
+        OnUnitActiveSec=1h
+
+        [Install]
+        WantedBy=default.target
+write_files:
+  - path: "/etc/resolv.conf"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      {% for nameserv in my.network.dns -%}
+        nameserver {{ nameserv }}
+      {% endfor %}
+  - path: /etc/ssh/sshd_config
+    permissions: 600
+    owner: root:root
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      ChallengeResponseAuthentication no
+      AllowUsers core kube
+  - path: /root/.vimrc
+    permissions: 0644
+    owner: root:root
+    content: |
+      se nu
+      se ai
+      se shiftwidth=2
+      se tabstop=2
+      se expandtab
+  - path: "/srv/sdef/sdef.sh"
+    permissions: "755"
+    owner: "root"
+    content: |
+      {% macro sdef() %}{% include "sdef/sdef.sh" %}{% endmacro -%}
+      {{ sdef()|indent(6) }}
+users:
+  - name: "kube"
+    groups:
+      - "sudo"
+      - "docker"
+
+# This is needed for me as my servers tend to timeout. :-(
+{% include 'etcd_misc.yml' ignore missing %}
+
+# k8s
+{% include my.includes.k8s ignore missing %}
+
+# TINC
+{% include 'tinc.tmpl' %}

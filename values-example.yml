@@ -2,20 +2,23 @@
 ---
 global:
   override:
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
+    network:
+      dns:
+        - 8.8.8.8
+        - 8.8.4.4
   flannel:
     network_range: 10.2.0.0/16
   k8s:
+    master_host: k8s-master.example.org
     service_ip_range: 10.3.0.0/24
     service_ip: 10.3.0.1
     dns_service_ip: 10.3.0.10
-    versions:
-      hyperkube: v1.4.5_coreos.0
-      calico: latest
-      policy_controller: v0.5.0
-      leader_elector: v0.1.0
+  versions:
+    hyperkube: v1.4.5_coreos.0
+    calico: latest
+    policy_controller: v0.5.0
+    leader_elector: v0.1.0
+    coreos_release: "stable"
   sdef:
     domain: sdef.example.org
     cf_apikey: aaa111222333

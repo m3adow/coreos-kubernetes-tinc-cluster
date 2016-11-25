@@ -1,0 +1,278 @@
+write_files:
+  - path: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-apiserver
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-apiserver
+          image: quay.io/coreos/hyperkube:{{ my.versions.hyperkube }}
+          command:
+          - /hyperkube
+          - apiserver
+          - --bind-address=0.0.0.0
+          - --etcd-servers=https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+            {%- if not loop.last %},{% endif %}{% endfor %}
+          - --etcd-cafile=/etc/ssl/etcd/ca.crt
+          - --etcd-certfile=/etc/ssl/etcd/{{ my.hostname }}.crt
+          - --etcd-keyfile=/etc/ssl/etcd/{{ my.hostname }}.key
+          - --allow-privileged=true
+          - --service-cluster-ip-range={{ my.k8s.service_ip_range }}
+          - --secure-port=443
+          - --advertise-address={{ my.network.ip }}
+          - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota
+          - --tls-cert-file=/etc/kubernetes/ssl/apiserver.pem
+          - --tls-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --client-ca-file=/etc/kubernetes/ssl/ca.pem
+          - --service-account-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --runtime-config=extensions/v1beta1=true,extensions/v1beta1/networkpolicies=true
+          ports:
+          - containerPort: 443
+            hostPort: 443
+            name: https
+          - containerPort: 8080
+            hostPort: 8080
+            name: local
+          volumeMounts:
+          - mountPath: /etc/kubernetes/ssl
+            name: ssl-certs-kubernetes
+            readOnly: true
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+          - mountPath: /etc/ssl/etcd
+            name: etcd-ssl
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /etc/kubernetes/ssl
+          name: ssl-certs-kubernetes
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+        - hostPath:
+            path: /etc/ssl/etcd
+          name: etcd-ssl
+  - path: "/etc/kubernetes/manifests/kube-proxy.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-proxy
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-proxy
+          image: quay.io/coreos/hyperkube:{{ my.versions.hyperkube }}
+          command:
+          - /hyperkube
+          - proxy
+          - --master=http://127.0.0.1:8080
+          - --proxy-mode=iptables
+          securityContext:
+            privileged: true
+          volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+  - path: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-controller-manager
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-controller-manager
+          image: quay.io/coreos/hyperkube:{{ my.versions.hyperkube }}
+          command:
+          - /hyperkube
+          - controller-manager
+          - --master=http://127.0.0.1:8080
+          - --leader-elect=true
+          - --service-account-private-key-file=/etc/kubernetes/ssl/apiserver-key.pem
+          - --root-ca-file=/etc/kubernetes/ssl/ca.pem
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: 10252
+            initialDelaySeconds: 15
+            timeoutSeconds: 1
+          volumeMounts:
+          - mountPath: /etc/kubernetes/ssl
+            name: ssl-certs-kubernetes
+            readOnly: true
+          - mountPath: /etc/ssl/certs
+            name: ssl-certs-host
+            readOnly: true
+        volumes:
+        - hostPath:
+            path: /etc/kubernetes/ssl
+          name: ssl-certs-kubernetes
+        - hostPath:
+            path: /usr/share/ca-certificates
+          name: ssl-certs-host
+  - path: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-scheduler
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-scheduler
+          image: quay.io/coreos/hyperkube:{{ my.versions.hyperkube }}
+          command:
+          - /hyperkube
+          - scheduler
+          - --master=http://127.0.0.1:8080
+          - --leader-elect=true
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /healthz
+              port: 10251
+            initialDelaySeconds: 15
+            timeoutSeconds: 1
+  - path: "/etc/kubernetes/manifests/policy-controller.yaml"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: calico-policy-controller
+        namespace: calico-system
+      spec:
+        hostNetwork: true
+        containers:
+          # The Calico policy controller.
+          - name: k8s-policy-controller
+            image: calico/kube-policy-controller:{{ my.versions.policy_controller }}
+            env:
+              - name: ETCD_CA_CERT_FILE
+                value: /etc/ssl/etcd/ca.crt
+              - name: ETCD_CERT_FILE
+                value: /etc/ssl/etcd/ironman.tillwiese.de.crt
+              - name: ETCD_KEY_FILE
+                value: /etc/ssl/etcd/ironman.tillwiese.de.key
+              - name: ETCD_ENDPOINTS
+                value: "https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+                  {%- if not loop.last %},{% endif %}{% endfor %}"
+              - name: K8S_API
+                value: "http://127.0.0.1:8080"
+              - name: LEADER_ELECTION
+                value: "true"
+            volumeMounts:
+            - mountPath: /etc/ssl/etcd
+              name: etcd-ssl
+              readOnly: true
+          # Leader election container used by the policy controller.
+          - name: leader-elector
+            image: quay.io/calico/leader-elector:{{ my.versions.leader_elector }}
+            imagePullPolicy: IfNotPresent
+            args:
+              - "--election=calico-policy-election"
+              - "--election-namespace=calico-system"
+              - "--http=127.0.0.1:4040"
+        volumes:
+        - hostPath:
+            path: /etc/ssl/etcd
+          name: etcd-ssl
+  - path: "/etc/kubernetes/cni/net.d/10-calico.conf"
+    permissions: "0644"
+    owner: "root"
+    content: |
+      {
+          "name": "calico",
+          "type": "flannel",
+          "delegate": {
+              "type": "calico",
+              "etcd_endpoints": "https://{{ my.network.ip }}:2379,{% for node in remaining_nodes %}https://{{ node.network.ip }}:2379
+                {%- if not loop.last %},{% endif %}{% endfor %}",
+              "log_level": "none",
+              "log_level_stderr": "info",
+              "hostname": "{{ my.network.ip }}",
+              "policy": {
+                  "type": "k8s",
+                  "k8s_api_root": "http://127.0.0.1:8080/api/v1/"
+              }
+          }
+      }
+coreos:
+  units:
+  - name: kubelet.service
+    command: start
+    content: |
+      [Service]
+      ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
+      ExecStartPre=/usr/bin/mkdir -p /var/log/containers
+
+      EnvironmentFile=/etc/environment
+      {# Use these lines for CoreOS versions less than 1214.0.0
+      Environment=KUBELET_VERSION={{ my.versions.hyperkube }}
+      Environment="RKT_OPTS=--volume var-log,kind=host,source=/var/log \
+        --mount volume=var-log,target=/var/log \
+        --volume dns,kind=host,source=/etc/resolv.conf \
+        --mount volume=dns,target=/etc/resolv.conf"
+      #}
+      Environment=KUBELET_IMAGE_TAG={{ my.versions.hyperkube }}
+      Environment="RKT_RUN_ARGS=--volume var-log,kind=host,source=/var/log \
+        --mount volume=var-log,target=/var/log \
+        --volume=etcd-ssl,kind=host,source=/etc/ssl/etcd/ \
+        --mount=volume=etcd-ssl,target=/etc/ssl/etcd/ \
+        --volume dns,kind=host,source=/etc/resolv.conf \
+        --mount volume=dns,target=/etc/resolv.conf"
+
+      ExecStart=/usr/lib/coreos/kubelet-wrapper \
+        --api-servers=http://127.0.0.1:8080 \
+        --network-plugin-dir=/etc/kubernetes/cni/net.d \
+        --network-plugin=cni \
+        --register-schedulable=false \
+        --allow-privileged=true \
+        --config=/etc/kubernetes/manifests \
+        --hostname-override={{ my.network.ip }} \
+        --cluster-dns={{ my.k8s.dns_service_ip }} \
+        --cluster-domain=cluster.local
+      Restart=always
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+  - name: create-k8s-namespaces.service
+    enable: true
+    command: start
+    content: |
+      [Unit]
+      After=kubelet.service
+      
+      [Service]
+      Type=oneshot
+      ExecStartPre=/bin/bash -c 'while ! curl -so /dev/null http://127.0.0.1:8080; do sleep 5; done'
+      ExecStart=/usr/bin/curl -sS -H "Content-Type: application/json" -XPOST \
+        -d'{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"kube-system"}}' "http://127.0.0.1:8080/api/v1/namespaces"
+      ExecStart=/usr/bin/curl -sS -H "Content-Type: application/json" -XPOST \
+        -d'{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"calico-system"}}' "http://127.0.0.1:8080/api/v1/namespaces"
+
+{% include 'k8s-common.tmpl' %}

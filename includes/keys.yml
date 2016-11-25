@@ -1,0 +1,3 @@
+ssh-authorized-keys:
+  - ssh-ed25519 oneexamplekey
+  - ssh-rsa anotherone
